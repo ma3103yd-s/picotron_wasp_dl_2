@@ -3,6 +3,7 @@ import random
 import numpy as np
 import builtins
 import fcntl
+import glob
 
 import huggingface_hub
 
@@ -110,6 +111,6 @@ def download_model(model_name, hf_token):
     huggingface_hub.snapshot_download(model_name, repo_type="model", local_dir="hf_model_safetensors", token=hf_token,
                                       allow_patterns=["*.safetensors", "*.json"])
     # Check if the model has SafeTensors files
-    if not os.path.exists("hf_model_safetensors/model.safetensors"):
+    if not glob.glob("hf_model_safetensors/*.safetensors"):
         raise ValueError(f"Model {model_name} does not have SafeTensors files.")
     print("SafeTensors files downloaded successfully! ✅")
