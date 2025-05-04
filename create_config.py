@@ -27,9 +27,11 @@ def create_single_config(
     seq_len: int,
     subset_name: Optional[str],
     exp_name: str,
+    optimizer: str,
     use_wandb: bool = False,
     use_cpu: bool = False,
     use_fused_adam: bool = False,
+    use_tamed_muon: bool = False,
     hf_token: str = None
 ):
     run_path = os.path.join(out_dir, exp_name)
@@ -52,7 +54,9 @@ def create_single_config(
     config_content["model"]["num_hidden_layers"] = tmp_model_config.num_hidden_layers if num_hidden_layers is None else num_hidden_layers
     config_content["model"]["num_attention_heads"] = tmp_model_config.num_attention_heads if num_attention_heads is None else num_attention_heads
     config_content["model"]["num_key_value_heads"] = tmp_model_config.num_key_value_heads if num_key_value_heads is None else num_key_value_heads
+    config_content["model"]["optimizer"] = optimizer
     config_content["model"]["use_fused_adam"] = use_fused_adam
+    config_content["model"]["use_tamed_muon"] = use_tamed_muon
     del tmp_model_config
 
     config_content['distributed']['tp_size'] = tp
@@ -100,9 +104,11 @@ if __name__ == "__main__":
     parser.add_argument("--seq_len", type=int, help="Sequence length", default=1024)
     parser.add_argument("--subset_name", type=str, help="Subset name", default=None)
     parser.add_argument("--exp_name", type=str, help="Experiment name", default="dummy_exp")
+    parser.add_argument("--optimizer", type=str, help="Optimizer", default="Muon")
     parser.add_argument("--use_wandb", action="store_true", help="Use wandb for logging")
     parser.add_argument("--use_cpu", action="store_true", help="Use CPU for training")
     parser.add_argument("--use_fused_adam", action="store_true", help="Use fused adam")
+    parser.add_argument("--use_tamed_muon", action="store_true", help="Use tamed muon")
     parser.add_argument("--hf_token", type=str, help="HF token")
 
     args=parser.parse_args()
@@ -122,10 +128,12 @@ if __name__ == "__main__":
         mbs=args.mbs,
         seq_len=args.seq_len,
         subset_name=args.subset_name,
+        optimizer=args.optimizer,
         exp_name=args.exp_name,
         use_wandb=args.use_wandb,
         use_cpu=args.use_cpu,
         use_fused_adam=args.use_fused_adam,
+        use_tamed_muon=args.use_tamed_muon,
         hf_token=args.hf_token
     )    
 

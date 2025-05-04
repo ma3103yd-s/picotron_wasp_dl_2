@@ -14,12 +14,15 @@
         "num_attention_heads": 16,
         "num_key_value_heads": 4,
         "dtype": "bfloat16",
+	"optimizer": "AdamW",
         "use_flash_attention": true,
-        "use_fused_adam": true
+        "use_fused_adam": true,
+	"use_tamed_muon": false
     },
     "training": {
         "seed": 42,
-        "learning_rate": 3e-4,
+        "learning_rate_adam": 3e-4,
+	"learning_rate_muon": 3e-3,
         "total_train_steps": 200,
         "seq_length": 1024,
         "micro_batch_size": 32,

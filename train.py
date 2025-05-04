@@ -26,6 +26,11 @@ from picotron.model import Llama
 from picotron.utils import download_model
 import wandb
 
+try:
+    from custom_optimizers.muon import Muon
+except ImportError:
+    pass
+
 def train_step(model, data_loader, device):
     acc_loss = 0.0
     
@@ -201,12 +206,25 @@ if __name__ == "__main__":
     tensor_shapes = (data_loader.micro_batch_size, data_loader.seq_length_per_gpu, model_config.hidden_size)
     
     extra_args = dict()
-    if config["model"]["use_fused_adam"]:
-        fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
-        use_fused = fused_available and device == 'cuda'
-        extra_args = dict(fused=True) if use_fused else dict()
+    
+    match config["model"]["optimizer"]:
+        case "AdamW":
+            if config["model"]["use_fused_adam"]:
+                fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+                use_fused = fused_available and device == 'cuda'
+                extra_args = dict(fused=True) if use_fused else dict()
+            optimizer = AdamW(model.parameters(), lr=config["training"]["learning_rate_adam"], **extra_args)
+        case "Muon":
+            lr_adamw = config["training"]["learning_rate_adam"]
+            lr_muon = config["training"]["learning_rate_muon"]
+            if config["model"]["use_tamed_muon"]:
+                optimizer = Muon(model.parameters(), lr_muon=lr_muon, lr_adamw=lr_adamw, taming_alpha=1.0)
+            else:
+                optimizer = Muon(model.parameters(), lr_muon=lr_muon, lr_adamw=lr_adamw)
+        case _:
+            raise ValueError("Optimizer not supported. Supported optimizers are: [AdamW, Muon]")
 
-    optimizer = AdamW(model.parameters(), lr=config["training"]["learning_rate"], **extra_args)
+
     
     checkpoint_manager = CheckpointManager()
 
