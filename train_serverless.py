@@ -25,6 +25,7 @@ from picotron.data_parallel.data_parallel import DataParallelBucket
 from picotron.model import Llama
 from picotron.utils import download_model
 import wandb
+import runpod
 
 try:
     from custom_optimizers.muon import Muon
@@ -59,14 +60,8 @@ def train_step(model, data_loader, device):
 
     return acc_loss
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="", help="Path to config file")
-    args = parser.parse_args()
-
-    with open(args.config, "r") as f:
-        config = json.load(f)
-    
+def handler(event):
+    config = event['input']
     os.environ["OMP_NUM_THREADS"] = config["environment"]["OMP_NUM_THREADS"]
     os.environ["TOKENIZERS_PARALLELISM"] = config["environment"]["TOKENIZERS_PARALLELISM"]
     os.environ["FLASH_ATTEN"] = config["environment"]["FLASH_ATTEN"]
@@ -135,6 +130,7 @@ if __name__ == "__main__":
         print("Tokens per step:", to_readable_format(tokens_per_step), is_print_rank=is_wandb_rank)
 
     if is_wandb_rank and config["logging"]["use_wandb"]:
+        wandb.login(key = os.environ['WANDB_KEY'])
         wandb.init(
             project="picotron",
             name=f"{config['logging']['run_name']}_{to_readable_format(tokens_per_step)}_{pgm.process_group_manager}",
@@ -349,6 +345,38 @@ if __name__ == "__main__":
             break
     
     if is_wandb_rank and config["logging"]["use_wandb"]:
+        save_path = config["checkpoint"]["save_dir"]
+        training_config_save_path = save_path + "/config.json"
+        os.makedirs(os.path.dirname(training_config_save_path), exist_ok=True)
+        with open(training_config_save_path, 'w') as f:
+            json.dump(model_config.to_dict(), f, indent=2) # 'config' is your script's loaded config
+        data_loader.tokenizer.save_pretrained(config["checkpoint"]["save_dir"])
+        base_name = f"SmolLM_{config['model']['optimizer']}"
+        artifact_name = base_name + "_tamed" if config["model"].get("use_tamed_muon") else base_name
+        print(f"Logging artifact '{artifact_name}' to WandB...")
+        artifact = wandb.Artifact(
+            name=artifact_name,
+            type="model", # Standard type for models
+            description="Pre-trained model",
+            metadata={ # Add relevant metadata
+                "step": config["training"]["total_train_steps"],
+                "trained_tokens": trained_tokens,
+                "config": config,
+                # "original_run_config": original_run_config_dict, # Can be large, consider if needed here or just in file
+            }
+        )
+        artifact.add_dir(config["checkpoint"]["save_dir"]) # Add the entire directory
+        if config["checkpoint"]["save_artifact"]:
+            wandb.log_artifact(artifact)
+            print(f"Artifact {artifact_name} logged to WandB.")
         wandb.finish()
 
     dist.destroy_process_group()
+
+    return artifact_name if not None else config
+
+
+if __name__ == "__main__":
+    runpod.serverless.start({ 'handler': handler })
+    
+
