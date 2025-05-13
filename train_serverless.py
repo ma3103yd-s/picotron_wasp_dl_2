@@ -32,6 +32,52 @@ try:
 except ImportError:
     pass
 
+def evaluate_step(model, data_loader, device): # Removed pgm
+    """
+    Evaluates the model on the provided data_loader.
+    Simplified for no parallelism.
+    """
+    model.eval()  # Set model to evaluation mode
+    total_loss = 0.0
+    total_batches = 0
+    
+    # Assuming data_loader for validation has grad_acc_steps = 1
+    # and micro_batch_size is the actual batch size for evaluation.
+
+    with torch.no_grad(): # Crucial for evaluation
+        # If data_loader is an iterator and you want to go through it once:
+        try:
+            for _ in range(len(data_loader)): # Iterate through all validation batches
+                batch = next(data_loader)
+                input_ids = batch["input_ids"].to(device)
+                target_ids = batch["target_ids"].to(device)
+
+                outputs = model(input_ids=input_ids) # Direct model call
+
+                batch_size, seq_len = input_ids.shape
+                target_ids_flat = target_ids.reshape(-1)
+                outputs_flat = outputs.view(seq_len*batch_size, -1)
+                loss = F.cross_entropy(outputs_flat, target_ids_flat, reduction='mean')
+                
+                total_loss += loss.item()
+                total_batches += 1
+        except StopIteration:
+            # This can happen if len(data_loader) is an estimate and it finishes early
+            pass 
+        finally:
+            # Reset data_loader for next use if it's stateful and iterated fully
+            if hasattr(data_loader, 'reset'):
+                data_loader.reset()
+
+
+    avg_loss = total_loss / total_batches if total_batches > 0 else 0.0
+    
+    # No need for average_loss_across_dp_cp_ranks as world_size is effectively 1 for this part
+    
+    model.train() # Set model back to training mode
+    return avg_loss
+
+
 def train_step(model, data_loader, device):
     acc_loss = 0.0
     
@@ -117,6 +163,19 @@ def handler(event):
         split=config["dataset"].get("split", "train")
     )
 
+    data_loader_eval = MicroBatchDataLoader(
+        micro_batch_size=config["training"]["micro_batch_size"],
+        seq_length=config["training"]["seq_length"],
+        dataset_name=config["dataset"]["name"],
+        tokenizer_name=config["model"]["name"],
+        grad_acc_steps=config["training"]["gradient_accumulation_steps"],
+        device=device,
+        num_workers=config["dataset"]["num_workers"],
+        num_proc=config["dataset"]["num_proc"],
+        subset_name=config["dataset"].get("subset_name", None),
+        split=config["dataset"].get("split", "validation")
+    )
+
     # download model on the first rank, assume all ranks have access to the same filesystem
     if pgm.process_group_manager.global_rank == 0:
         download_model(config["model"]["name"], os.environ["HF_TOKEN"])
@@ -130,10 +189,16 @@ def handler(event):
         print("Tokens per step:", to_readable_format(tokens_per_step), is_print_rank=is_wandb_rank)
 
     if is_wandb_rank and config["logging"]["use_wandb"]:
+        base_name = f"{config['model']['optimizer']}"
+        if config['model']['optimizer'] == 'Muon':
+            _lr = config['training']['learning_rate_muon']
+        else:
+            _lr = config['training']['learning_rate_adam']
+        artifact_name = base_name + "_tamed" if config["model"].get("use_tamed_muon") else base_name
         wandb.login(key = os.environ['WANDB_KEY'])
         wandb.init(
             project="picotron",
-            name=f"{config['logging']['run_name']}_{to_readable_format(tokens_per_step)}_{pgm.process_group_manager}",
+            name=f"{config['logging']['run_name']}_{to_readable_format(tokens_per_step)}_{artifact_name}_{_lr}",
             config={
                 "tensor_parallel_size": pgm.process_group_manager.tp_world_size,
                 "context_parallel_size": pgm.process_group_manager.cp_world_size,
@@ -311,6 +376,9 @@ def handler(event):
         tokens_per_second = tokens_per_step / step_duration
         tokens_per_second_per_gpu = tokens_per_second / world_size
         mfu = get_mfu(tokens_per_second_per_gpu, num_params, model_config)
+        val_loss = None
+        if step % config["validation"]["frequency"] == 0:
+            val_loss = evaluate_step(model, data_loader_eval, device)
         
         if is_wandb_rank:
             print(
@@ -337,6 +405,9 @@ def handler(event):
                     "memory_usage": torch.cuda.memory_reserved() / 1e9,
                     "trained_tokens": trained_tokens
                 })
+                if val_loss:
+                    wandb.log({"val_loss": val_loss})
+                    print(f"Validation loss: {val_loss:6.4f} | ")
         
         if step % config["checkpoint"]["save_frequency"] == 0:
             checkpoint_manager.save_checkpoint(model, optimizer, step, trained_tokens, config["checkpoint"]["save_dir"]+f"/{step}")
